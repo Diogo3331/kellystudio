@@ -1,36 +1,45 @@
-﻿exports.handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-    return response(200, { ok: true });
+import {
+  getSafeEmail,
+  getSiteUrl,
+  jsonResponse,
+  mapMpStatusToOrderStatus,
+  methodNotAllowed,
+  mpRequestJson,
+  normalizeCpf,
+  normalizePaymentMethod,
+  parseJsonSafe,
+  stringifyMpError,
+} from "./_utils.js";
+
+export async function onRequest(context) {
+  const { request, env } = context;
+
+  if (request.method === "OPTIONS") {
+    return jsonResponse({ ok: true });
   }
 
-  if (event.httpMethod !== "POST") {
-    return response(405, { error: "Method Not Allowed" });
+  if (request.method !== "POST") {
+    return methodNotAllowed();
   }
 
-  let body;
-  try {
-    body = JSON.parse(event.body || "{}");
-  } catch {
-    return response(400, { error: "JSON invalido." });
-  }
-
-  const provider = String(body.provider || process.env.PAYMENT_PROVIDER || "mercado_pago");
+  const body = parseJsonSafe(await request.text());
+  const provider = String(body.provider || env.PAYMENT_PROVIDER || "mercado_pago");
   const order = body.order || {};
 
   if (!order.id || !Array.isArray(order.items) || order.items.length === 0) {
-    return response(400, { error: "Pedido invalido para pagamento." });
+    return jsonResponse({ error: "Pedido invalido para pagamento." }, 400);
   }
 
   if (provider !== "mercado_pago") {
-    return response(400, { error: "Gateway ainda nao configurado para este provider." });
+    return jsonResponse({ error: "Gateway ainda nao configurado para este provider." }, 400);
   }
 
-  const accessToken = process.env.MP_ACCESS_TOKEN;
+  const accessToken = String(env.MP_ACCESS_TOKEN || "");
   if (!accessToken) {
-    return response(500, { error: "MP_ACCESS_TOKEN nao configurado no Netlify." });
+    return jsonResponse({ error: "MP_ACCESS_TOKEN nao configurado no Cloudflare." }, 500);
   }
 
-  const siteUrl = String(process.env.SITE_URL || "https://www.kellystudio.com.br").replace(/\/+$/, "");
+  const siteUrl = getSiteUrl(env, request);
   const paymentMethod = normalizePaymentMethod(order.paymentMethod);
   const safeEmail = getSafeEmail(order.customerEmail);
   const payerDocument = normalizeCpf(order.customerDocument || order.customerCpf || order.customer_document);
@@ -45,7 +54,7 @@
   };
 
   if (paymentMethod === "pix" && payerDocument.length !== 11) {
-    return response(400, { error: "Para pagar com Pix, informe um CPF valido com 11 digitos." });
+    return jsonResponse({ error: "Para pagar com Pix, informe um CPF valido com 11 digitos." }, 400);
   }
 
   try {
@@ -59,7 +68,7 @@
         payerDocument,
         metadata,
       });
-      return response(200, pixResult);
+      return jsonResponse(pixResult);
     }
 
     const preferenceResult = await createCheckoutPreference({
@@ -72,15 +81,12 @@
       payerDocument,
       metadata,
     });
-    return response(200, preferenceResult);
+    return jsonResponse(preferenceResult);
   } catch (error) {
     const errorMessage = String(error?.message || error || "Falha inesperada ao criar pagamento.");
-    return response(500, {
-      error: errorMessage,
-      details: errorMessage,
-    });
+    return jsonResponse({ error: errorMessage, details: errorMessage }, 500);
   }
-};
+}
 
 async function createPixPayment({ accessToken, siteUrl, order, safeEmail, payerFirstName, payerDocument, metadata }) {
   const total = Number(order.total);
@@ -103,27 +109,22 @@ async function createPixPayment({ accessToken, siteUrl, order, safeEmail, payerF
       },
     },
     external_reference: order.id,
-    notification_url: `${siteUrl}/.netlify/functions/payment-webhook-v2`,
+    notification_url: `${siteUrl}/api/payment-webhook-v2`,
     date_of_expiration: dateOfExpiration,
     metadata,
   };
 
-  const mpRes = await fetch("https://api.mercadopago.com/v1/payments", {
+  const mp = await mpRequestJson("https://api.mercadopago.com/v1/payments", accessToken, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      "X-Idempotency-Key": `pix-${order.id}-${Date.now()}`,
-    },
-    body: JSON.stringify(payload),
+    body: payload,
+    idempotencyKey: `pix-${order.id}-${Date.now()}`,
   });
 
-  const mpData = await mpRes.json();
-  if (!mpRes.ok) {
-    throw new Error(`Mercado Pago PIX [${mpRes.status}]: ${stringifyMpError(mpData)}`);
+  if (!mp.ok) {
+    throw new Error(`Mercado Pago PIX [${mp.status}]: ${stringifyMpError(mp.data)}`);
   }
 
-  const transactionData = mpData?.point_of_interaction?.transaction_data || {};
+  const transactionData = mp.data?.point_of_interaction?.transaction_data || {};
   const qrCode = String(transactionData.qr_code || "");
   const qrCodeBase64 = String(transactionData.qr_code_base64 || "");
 
@@ -134,12 +135,13 @@ async function createPixPayment({ accessToken, siteUrl, order, safeEmail, payerF
   return {
     provider: "mercado_pago",
     paymentType: "pix",
-    paymentId: mpData.id,
-    status: mpData.status,
+    paymentId: mp.data.id,
+    status: mp.data.status,
+    orderStatus: mapMpStatusToOrderStatus(mp.data.status),
     qrCode,
     qrCodeBase64,
     ticketUrl: transactionData.ticket_url || "",
-    expiresAt: mpData.date_of_expiration || dateOfExpiration,
+    expiresAt: mp.data.date_of_expiration || dateOfExpiration,
   };
 }
 
@@ -153,10 +155,10 @@ async function createCheckoutPreference({
   payerDocument,
   metadata,
 }) {
-  const preferencePayload = {
+  const payload = {
     external_reference: order.id,
     statement_descriptor: "KELLYSTUDIO",
-    notification_url: `${siteUrl}/.netlify/functions/payment-webhook-v2`,
+    notification_url: `${siteUrl}/api/payment-webhook-v2`,
     back_urls: {
       success: `${siteUrl}/?payment=success`,
       pending: `${siteUrl}/?payment=pending`,
@@ -186,85 +188,34 @@ async function createCheckoutPreference({
 
   if (paymentMethod === "card") {
     const installments = Math.min(12, Math.max(1, Number(order.installments) || 1));
-    preferencePayload.payment_methods = {
+    payload.payment_methods = {
       default_installments: installments,
       installments: 12,
-      excluded_payment_types: [
-        { id: "ticket" },
-        { id: "atm" },
-        { id: "bank_transfer" },
-      ],
+      excluded_payment_types: [{ id: "ticket" }, { id: "atm" }, { id: "bank_transfer" }],
     };
   } else if (paymentMethod === "boleto") {
-    preferencePayload.payment_methods = {
+    payload.payment_methods = {
       excluded_payment_types: [{ id: "bank_transfer" }],
       excluded_payment_methods: [{ id: "pix" }],
     };
   }
 
-  const mpRes = await fetch("https://api.mercadopago.com/checkout/preferences", {
+  const mp = await mpRequestJson("https://api.mercadopago.com/checkout/preferences", accessToken, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      "X-Idempotency-Key": `pref-${order.id}-${Date.now()}`,
-    },
-    body: JSON.stringify(preferencePayload),
+    body: payload,
+    idempotencyKey: `pref-${order.id}-${Date.now()}`,
   });
 
-  const mpData = await mpRes.json();
-  if (!mpRes.ok) {
-    throw new Error(`Mercado Pago Checkout [${mpRes.status}]: ${stringifyMpError(mpData)}`);
+  if (!mp.ok) {
+    throw new Error(`Mercado Pago Checkout [${mp.status}]: ${stringifyMpError(mp.data)}`);
   }
 
   return {
     provider: "mercado_pago",
     paymentType: paymentMethod,
-    preferenceId: mpData.id,
-    checkoutUrl: mpData.init_point,
-    sandboxInitPoint: mpData.sandbox_init_point,
+    preferenceId: mp.data.id,
+    checkoutUrl: mp.data.init_point,
+    sandboxInitPoint: mp.data.sandbox_init_point,
   };
 }
 
-function normalizePaymentMethod(value) {
-  const method = String(value || "").toLowerCase();
-  if (method === "pix" || method === "card" || method === "boleto") return method;
-  return "card";
-}
-
-function getSafeEmail(value) {
-  const email = String(value || "").trim().toLowerCase();
-  if (email.includes("@")) return email;
-  return "cliente@kellystudio.com.br";
-}
-
-function normalizeCpf(value) {
-  return String(value || "").replace(/\D/g, "").slice(0, 11);
-}
-
-function stringifyMpError(data) {
-  try {
-    const simplified = {
-      message: data?.message || "",
-      error: data?.error || "",
-      status: data?.status || "",
-      cause: Array.isArray(data?.cause) ? data.cause : [],
-    };
-    return JSON.stringify(simplified);
-  } catch {
-    return "unknown_error";
-  }
-}
-
-function response(statusCode, payload) {
-  return {
-    statusCode,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-    },
-    body: JSON.stringify(payload),
-  };
-}

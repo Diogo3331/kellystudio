@@ -75,14 +75,18 @@
   <script src="site-config.js?v=20260405-runtime1"></script>
   <script>
     const runtimeConfig = window.KELLY_RUNTIME_CONFIG || {};
+    const currentHost = window.location.hostname;
+    const isLocalHost = ["localhost", "127.0.0.1"].includes(currentHost);
+    const isNetlifyHost = currentHost.endsWith(".netlify.app");
+
     window.KELLY_PAYMENT_CONFIG = {
       provider: "mercado_pago",
       apiBase: runtimeConfig.paymentApiBase || (
-        window.location.hostname === "kellystudio.netlify.app"
-        ? "/.netlify/functions"
-        : ["localhost", "127.0.0.1"].includes(window.location.hostname)
-          ? "http://127.0.0.1:5000/api"
-          : "/.netlify/functions"
+        isLocalHost
+          ? "https://kellystudioo.netlify.app/.netlify/functions"
+          : isNetlifyHost
+            ? "/.netlify/functions"
+            : "/api"
       )
     };
   </script>
@@ -632,7 +636,7 @@
     <div id="orders-list" class="orders-list"></div>
   </section>
 
-  <script src="js/script.js?v=20260405-payment4"></script>
+  <script src="js/script.js?v=20260405-payment6"></script>
 </body>
 
 </html>
