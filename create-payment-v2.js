@@ -1,4 +1,4 @@
-exports.handler = async (event) => {
+﻿exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
     return response(200, { ok: true });
   }
@@ -74,9 +74,10 @@ exports.handler = async (event) => {
     });
     return response(200, preferenceResult);
   } catch (error) {
+    const errorMessage = String(error?.message || error || "Falha inesperada ao criar pagamento.");
     return response(500, {
-      error: "Falha inesperada ao criar pagamento.",
-      details: String(error?.message || error),
+      error: errorMessage,
+      details: errorMessage,
     });
   }
 };
@@ -119,7 +120,7 @@ async function createPixPayment({ accessToken, siteUrl, order, safeEmail, payerF
 
   const mpData = await mpRes.json();
   if (!mpRes.ok) {
-    throw new Error(`Erro ao gerar Pix no Mercado Pago: ${JSON.stringify(mpData)}`);
+    throw new Error(`Mercado Pago PIX [${mpRes.status}]: ${stringifyMpError(mpData)}`);
   }
 
   const transactionData = mpData?.point_of_interaction?.transaction_data || {};
@@ -173,11 +174,11 @@ async function createCheckoutPreference({
       first_name: payerFirstName,
       ...(payerDocument
         ? {
-          identification: {
-            type: "CPF",
-            number: payerDocument,
-          },
-        }
+            identification: {
+              type: "CPF",
+              number: payerDocument,
+            },
+          }
         : {}),
     },
     metadata,
@@ -213,7 +214,7 @@ async function createCheckoutPreference({
 
   const mpData = await mpRes.json();
   if (!mpRes.ok) {
-    throw new Error(`Erro ao criar checkout no Mercado Pago: ${JSON.stringify(mpData)}`);
+    throw new Error(`Mercado Pago Checkout [${mpRes.status}]: ${stringifyMpError(mpData)}`);
   }
 
   return {
@@ -239,6 +240,20 @@ function getSafeEmail(value) {
 
 function normalizeCpf(value) {
   return String(value || "").replace(/\D/g, "").slice(0, 11);
+}
+
+function stringifyMpError(data) {
+  try {
+    const simplified = {
+      message: data?.message || "",
+      error: data?.error || "",
+      status: data?.status || "",
+      cause: Array.isArray(data?.cause) ? data.cause : [],
+    };
+    return JSON.stringify(simplified);
+  } catch {
+    return "unknown_error";
+  }
 }
 
 function response(statusCode, payload) {
