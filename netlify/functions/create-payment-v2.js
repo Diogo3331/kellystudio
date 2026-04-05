@@ -1,4 +1,4 @@
-exports.handler = async (event) => {
+﻿exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
     return response(200, { ok: true });
   }
@@ -33,14 +33,20 @@ exports.handler = async (event) => {
   const siteUrl = String(process.env.SITE_URL || "https://www.kellystudio.com.br").replace(/\/+$/, "");
   const paymentMethod = normalizePaymentMethod(order.paymentMethod);
   const safeEmail = getSafeEmail(order.customerEmail);
+  const payerDocument = normalizeCpf(order.customerDocument || order.customerCpf || order.customer_document);
   const payerFirstName = String(order.customerName || "Cliente").trim().split(" ")[0] || "Cliente";
   const metadata = {
     order_id: order.id,
     customer_name: order.customerName || "",
     customer_phone: order.customerPhone || "",
+    customer_document: payerDocument,
     shipping_location: order.shippingLocation || "",
     payment_method_selected: paymentMethod,
   };
+
+  if (paymentMethod === "pix" && payerDocument.length !== 11) {
+    return response(400, { error: "Para pagar com Pix, informe um CPF valido com 11 digitos." });
+  }
 
   try {
     if (paymentMethod === "pix") {
@@ -50,6 +56,7 @@ exports.handler = async (event) => {
         order,
         safeEmail,
         payerFirstName,
+        payerDocument,
         metadata,
       });
       return response(200, pixResult);
@@ -62,18 +69,20 @@ exports.handler = async (event) => {
       paymentMethod,
       safeEmail,
       payerFirstName,
+      payerDocument,
       metadata,
     });
     return response(200, preferenceResult);
   } catch (error) {
+    const errorMessage = String(error?.message || error || "Falha inesperada ao criar pagamento.");
     return response(500, {
-      error: "Falha inesperada ao criar pagamento.",
-      details: String(error?.message || error),
+      error: errorMessage,
+      details: errorMessage,
     });
   }
 };
 
-async function createPixPayment({ accessToken, siteUrl, order, safeEmail, payerFirstName, metadata }) {
+async function createPixPayment({ accessToken, siteUrl, order, safeEmail, payerFirstName, payerDocument, metadata }) {
   const total = Number(order.total);
   if (!Number.isFinite(total) || total <= 0) {
     throw new Error("Total invalido para gerar Pix.");
@@ -87,6 +96,11 @@ async function createPixPayment({ accessToken, siteUrl, order, safeEmail, payerF
     payer: {
       email: safeEmail,
       first_name: payerFirstName,
+      last_name: "Cliente",
+      identification: {
+        type: "CPF",
+        number: payerDocument,
+      },
     },
     external_reference: order.id,
     notification_url: `${siteUrl}/.netlify/functions/payment-webhook-v2`,
@@ -106,7 +120,7 @@ async function createPixPayment({ accessToken, siteUrl, order, safeEmail, payerF
 
   const mpData = await mpRes.json();
   if (!mpRes.ok) {
-    throw new Error(`Erro ao gerar Pix no Mercado Pago: ${JSON.stringify(mpData)}`);
+    throw new Error(`Mercado Pago PIX [${mpRes.status}]: ${stringifyMpError(mpData)}`);
   }
 
   const transactionData = mpData?.point_of_interaction?.transaction_data || {};
@@ -136,6 +150,7 @@ async function createCheckoutPreference({
   paymentMethod,
   safeEmail,
   payerFirstName,
+  payerDocument,
   metadata,
 }) {
   const preferencePayload = {
@@ -157,6 +172,14 @@ async function createCheckoutPreference({
     payer: {
       email: safeEmail,
       first_name: payerFirstName,
+      ...(payerDocument
+        ? {
+            identification: {
+              type: "CPF",
+              number: payerDocument,
+            },
+          }
+        : {}),
     },
     metadata,
   };
@@ -191,7 +214,7 @@ async function createCheckoutPreference({
 
   const mpData = await mpRes.json();
   if (!mpRes.ok) {
-    throw new Error(`Erro ao criar checkout no Mercado Pago: ${JSON.stringify(mpData)}`);
+    throw new Error(`Mercado Pago Checkout [${mpRes.status}]: ${stringifyMpError(mpData)}`);
   }
 
   return {
@@ -213,6 +236,24 @@ function getSafeEmail(value) {
   const email = String(value || "").trim().toLowerCase();
   if (email.includes("@")) return email;
   return "cliente@kellystudio.com.br";
+}
+
+function normalizeCpf(value) {
+  return String(value || "").replace(/\D/g, "").slice(0, 11);
+}
+
+function stringifyMpError(data) {
+  try {
+    const simplified = {
+      message: data?.message || "",
+      error: data?.error || "",
+      status: data?.status || "",
+      cause: Array.isArray(data?.cause) ? data.cause : [],
+    };
+    return JSON.stringify(simplified);
+  } catch {
+    return "unknown_error";
+  }
 }
 
 function response(statusCode, payload) {
