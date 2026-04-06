@@ -41,6 +41,7 @@ const checkoutTotalEl = document.getElementById("checkout-total");
 const checkoutNameInput = document.getElementById("checkout-name");
 const checkoutPhoneInput = document.getElementById("checkout-phone");
 const checkoutEmailInput = document.getElementById("checkout-email");
+const checkoutDocumentInput = document.getElementById("checkout-document");
 const pixOverlay = document.getElementById("pix-overlay");
 const pixModal = document.getElementById("pix-modal");
 const pixCloseBtn = document.getElementById("pix-close");
@@ -426,6 +427,40 @@ function maskPhone(value = "") {
   if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
   if (digits.length <= 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function normalizeCpf(value = "") {
+  return String(value).replace(/\D/g, "").slice(0, 11);
+}
+
+function maskCpf(value = "") {
+  const digits = normalizeCpf(value);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
+  if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
+}
+
+function isValidCpf(value = "") {
+  const cpf = normalizeCpf(value);
+  if (cpf.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(cpf)) return false;
+
+  let sum = 0;
+  for (let i = 0; i < 9; i += 1) {
+    sum += Number(cpf[i]) * (10 - i);
+  }
+  let firstDigit = (sum * 10) % 11;
+  if (firstDigit === 10) firstDigit = 0;
+  if (firstDigit !== Number(cpf[9])) return false;
+
+  sum = 0;
+  for (let i = 0; i < 10; i += 1) {
+    sum += Number(cpf[i]) * (11 - i);
+  }
+  let secondDigit = (sum * 10) % 11;
+  if (secondDigit === 10) secondDigit = 0;
+  return secondDigit === Number(cpf[10]);
 }
 
 function setAccountFeedback(message = "", type = "info") {
@@ -1185,7 +1220,8 @@ async function createPaymentSession(order) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = payload?.error || "Falha ao criar pagamento.";
-    throw new Error(message);
+    const details = payload?.details ? `\n${String(payload.details)}` : "";
+    throw new Error(`${message}${details}`);
   }
 
   return payload;
@@ -1200,6 +1236,7 @@ function createOrder() {
   const resolvedEmail = normalizeEmail(currentUser?.email || checkoutEmailInput.value.trim());
   const resolvedName = currentUser?.name || checkoutNameInput.value.trim() || "Cliente";
   const resolvedPhone = currentUser?.phone || checkoutPhoneInput.value.trim() || "-";
+  const resolvedDocument = normalizeCpf(checkoutDocumentInput?.value || "");
 
   return {
     id: orderNumber,
@@ -1208,6 +1245,7 @@ function createOrder() {
     customerName: resolvedName,
     customerPhone: resolvedPhone,
     customerEmail: resolvedEmail,
+    customerDocument: resolvedDocument,
     accountEmail: resolvedEmail,
     shippingLocation: shippingLocation || "Não informado",
     paymentLabel: getPaymentLabel(),
@@ -1532,6 +1570,10 @@ checkoutCepInput.addEventListener("input", () => {
   checkoutCepInput.value = maskCep(checkoutCepInput.value);
 });
 
+checkoutDocumentInput?.addEventListener("input", () => {
+  checkoutDocumentInput.value = maskCpf(checkoutDocumentInput.value);
+});
+
 checkoutCalcShippingBtn.addEventListener("click", async () => {
   await calculateShippingByCep(checkoutCepInput.value, checkoutShippingStatus);
   shippingCepInput.value = checkoutCepInput.value;
@@ -1601,20 +1643,31 @@ confirmOrderBtn.addEventListener("click", async () => {
     order.paymentLabel = getPaymentLabel();
 
     if (isPix) {
-      if (!payment.qrCode) {
+      if (payment.qrCode) {
+        orderHistory.unshift(order);
+        saveOrdersState();
+
+        openPixModal(payment, order);
+        alert(
+          `Pix gerado com sucesso!\n` +
+            `Número: ${order.id}\n` +
+            `Total: R$ ${formatPrice(order.total)}\n` +
+            `Copie o código Pix ou escaneie o QR Code para pagar.`
+        );
+      } else if (checkoutUrl) {
+        orderHistory.unshift(order);
+        saveOrdersState();
+
+        window.open(checkoutUrl, "_blank", "noopener,noreferrer");
+        alert(
+          `Abrimos o pagamento Pix no checkout seguro.\n` +
+            `Número: ${order.id}\n` +
+            `Total: R$ ${formatPrice(order.total)}\n` +
+            `Conclua o Pix na página do Mercado Pago.`
+        );
+      } else {
         throw new Error("Pix gerado sem código de pagamento.");
       }
-
-      orderHistory.unshift(order);
-      saveOrdersState();
-
-      openPixModal(payment, order);
-      alert(
-        `Pix gerado com sucesso!\n` +
-          `Número: ${order.id}\n` +
-          `Total: R$ ${formatPrice(order.total)}\n` +
-          `Copie o código Pix ou escaneie o QR Code para pagar.`
-      );
     } else {
       if (!checkoutUrl) {
         throw new Error("Checkout do Mercado Pago não retornou link.");
@@ -1633,10 +1686,15 @@ confirmOrderBtn.addEventListener("click", async () => {
       );
     }
   } catch (error) {
+    const rawDetail = String(error?.message || "");
+    const friendlyDetail = rawDetail.includes("CPF valido com 11 digitos")
+      ? "Para pagar com Pix, preencha o CPF com 11 numeros no checkout."
+      : rawDetail;
+
     alert(
       `Não foi possível iniciar o pagamento automático agora.\n` +
-        `Detalhe: ${error.message}\n\n` +
-        `A estrutura está pronta, só falta configurar as chaves do gateway.`
+        `Detalhe: ${friendlyDetail}\n\n` +
+        `Me envie esse detalhe para eu identificar exatamente o ponto que falta.`
     );
     return;
   } finally {
