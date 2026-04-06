@@ -1656,20 +1656,31 @@ confirmOrderBtn.addEventListener("click", async () => {
     order.paymentLabel = getPaymentLabel();
 
     if (isPix) {
-      if (!payment.qrCode) {
+      if (payment.qrCode) {
+        orderHistory.unshift(order);
+        saveOrdersState();
+
+        openPixModal(payment, order);
+        alert(
+          `Pix gerado com sucesso!\n` +
+            `Número: ${order.id}\n` +
+            `Total: R$ ${formatPrice(order.total)}\n` +
+            `Copie o código Pix ou escaneie o QR Code para pagar.`
+        );
+      } else if (checkoutUrl) {
+        orderHistory.unshift(order);
+        saveOrdersState();
+
+        window.open(checkoutUrl, "_blank", "noopener,noreferrer");
+        alert(
+          `Abrimos o pagamento Pix no checkout seguro.\n` +
+            `Número: ${order.id}\n` +
+            `Total: R$ ${formatPrice(order.total)}\n` +
+            `Conclua o Pix na página do Mercado Pago.`
+        );
+      } else {
         throw new Error("Pix gerado sem código de pagamento.");
       }
-
-      orderHistory.unshift(order);
-      saveOrdersState();
-
-      openPixModal(payment, order);
-      alert(
-        `Pix gerado com sucesso!\n` +
-          `Número: ${order.id}\n` +
-          `Total: R$ ${formatPrice(order.total)}\n` +
-          `Copie o código Pix ou escaneie o QR Code para pagar.`
-      );
     } else {
       if (!checkoutUrl) {
         throw new Error("Checkout do Mercado Pago não retornou link.");
@@ -1688,10 +1699,15 @@ confirmOrderBtn.addEventListener("click", async () => {
       );
     }
   } catch (error) {
+    const rawDetail = String(error?.message || "");
+    const friendlyDetail = rawDetail.includes("CPF valido com 11 digitos")
+      ? "Para pagar com Pix, preencha o CPF com 11 numeros no checkout."
+      : rawDetail;
+
     alert(
       `Não foi possível iniciar o pagamento automático agora.\n` +
-        `Detalhe: ${error.message}\n\n` +
-        `A estrutura está pronta, só falta configurar as chaves do gateway.`
+        `Detalhe: ${friendlyDetail}\n\n` +
+        `Me envie esse detalhe para eu identificar exatamente o ponto que falta.`
     );
     return;
   } finally {
