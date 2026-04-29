@@ -260,6 +260,15 @@ header {
   margin: 5px 0;
 }
 
+.product-meta {
+  display: block;
+  min-height: 38px;
+  margin-bottom: 10px;
+  color: #7b5b65;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .categorias {
   display: flex;
   justify-content: center;
